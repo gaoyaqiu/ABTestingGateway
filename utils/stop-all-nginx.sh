@@ -1,4 +1,4 @@
-rm *temp -rf
+rm  -rf *temp
 
 /usr/local/Cellar/openresty/1.13.6.1/nginx/sbin/nginx  -p `pwd` -c conf/nginx.conf  -s stop
 /usr/local/Cellar/openresty/1.13.6.1/nginx/sbin/nginx  -p `pwd` -c conf/stable.conf -s stop
