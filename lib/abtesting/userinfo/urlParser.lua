@@ -4,7 +4,7 @@ local _M = {
 }
 
 _M.get = function()
-	local u = ngx.var.uri
+    local u = ngx.var.uri
 	return u
 end
 return _M

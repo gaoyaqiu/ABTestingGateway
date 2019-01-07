@@ -26,13 +26,11 @@ _M.check = function(self, policy)
     for _, v in pairs(policy) do
         local url       = v[k_url]
         local upstream  = v[k_upstream]
-
         if not url or not upstream then
             local info = ERRORINFO.POLICY_INVALID_ERROR 
             local desc = ' need '..k_url..' and '..k_upstream
             return {false, info, desc}
         end
-
 --        if suffix < 0 or suffix > 9 then
 --            local info = ERRORINFO.POLICY_INVALID_ERROR 
 --            local desc = 'suffix is not between [0 and 10]'
@@ -75,10 +73,10 @@ _M.getUpstream = function(self, url)
     local url           = url; 
     local database	= self.database
     local policyLib = self.policyLib
-    
+
     local upstream, err = database:hget(policyLib , url)
     if not upstream then error{ERRORINFO.REDIS_ERROR, err} end
-    
+
     if upstream == ngx.null then
         return nil
     else

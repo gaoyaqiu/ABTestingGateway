@@ -83,7 +83,6 @@ _M.set = function(self, policy)
     local id = self:getIdCount()
     local database = self.database
     local divModulename = table.concat({'abtesting', 'diversion', policy.divtype}, '.')
-    
     self:_setDivtype(id, policy.divtype)
     self:_setDivdata(id, policy.divdata, divModulename)
     
