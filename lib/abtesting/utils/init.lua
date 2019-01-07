@@ -4,7 +4,7 @@ local _M = {}
 _M._VERSION = '0.0.1'
 
 _M.redisConf = {
-    ["uds"]      = ngx.var.redis_uds   ,
+    ["uds"]      = nil,
     ["host"]     = ngx.var.redis_host,
     ["port"]     = ngx.var.redis_port,
     ["poolsize"] = ngx.var.redis_pool_size,

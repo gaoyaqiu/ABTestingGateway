@@ -10,7 +10,6 @@ local lrucache = require "resty.lrucache"
 local lrucache_get = lrucache.get
 local lrucache_set = lrucache.set
 local ffi_string = ffi.string
-local ffi_new = ffi.new
 local ffi_gc = ffi.gc
 local ffi_copy = ffi.copy
 local ffi_cast = ffi.cast
@@ -21,21 +20,15 @@ local lshift = bit.lshift
 local sub = string.sub
 local fmt = string.format
 local byte = string.byte
-local setmetatable = setmetatable
-local concat = table.concat
 local ngx = ngx
 local type = type
 local tostring = tostring
 local error = error
+local setmetatable = setmetatable
+local tonumber = tonumber
 local get_string_buf = base.get_string_buf
 local get_string_buf_size = base.get_string_buf_size
-local get_size_ptr = base.get_size_ptr
 local new_tab = base.new_tab
-local floor = math.floor
-local print = print
-local tonumber = tonumber
-local ngx_log = ngx.log
-local ngx_ERR = ngx.ERR
 
 
 if not ngx.re then
@@ -149,6 +142,7 @@ local _M = {
 
 local buf_grow_ratio = 2
 
+
 function _M.set_buf_grow_ratio(ratio)
     buf_grow_ratio = ratio
 end
@@ -160,6 +154,20 @@ local function get_max_regex_cache_size()
     end
     max_regex_cache_size = C.ngx_http_lua_ffi_max_regex_cache_size()
     return max_regex_cache_size
+end
+
+
+local regex_cache_is_empty = true
+
+
+function _M.is_regex_cache_empty()
+    return regex_cache_is_empty
+end
+
+
+local function lrucache_set_wrapper(...)
+    regex_cache_is_empty = false
+    lrucache_set(...)
 end
 
 
@@ -290,9 +298,15 @@ local function collect_captures(compiled, rc, subj, flags, res)
 end
 
 
+_M.collect_captures = collect_captures
+
+
 local function destroy_compiled_regex(compiled)
     C.ngx_http_lua_ffi_destroy_regex(ffi_gc(compiled, nil))
 end
+
+
+_M.destroy_compiled_regex = destroy_compiled_regex
 
 
 local function re_match_compile(regex, opts)
@@ -344,7 +358,7 @@ local function re_match_compile(regex, opts)
 
         if compile_once then
             -- print("inserting compiled regex into cache")
-            lrucache_set(regex_match_cache, key, compiled)
+            lrucache_set_wrapper(regex_match_cache, key, compiled)
         end
     end
 
@@ -352,7 +366,14 @@ local function re_match_compile(regex, opts)
 end
 
 
+_M.re_match_compile = re_match_compile
+
+
 local function re_match_helper(subj, regex, opts, ctx, want_caps, res, nth)
+    -- we need to cast this to strings to avoid exceptions when they are
+    -- something else.
+    subj  = tostring(subj)
+
     local compiled, compile_once, flags = re_match_compile(regex, opts)
     if compiled == nil then
         -- compiled_once holds the error string
@@ -460,6 +481,90 @@ function ngx.re.find(subj, regex, opts, ctx, nth)
 end
 
 
+do
+    local function destroy_re_gmatch_iterator(iterator)
+        if not iterator._compile_once then
+            destroy_compiled_regex(iterator._compiled)
+        end
+        iterator._compiled = nil
+        iterator._pos = nil
+        iterator._subj = nil
+    end
+
+
+    local function iterate_re_gmatch(self)
+        local compiled = self._compiled
+        local subj = self._subj
+        local subj_len = self._subj_len
+        local flags = self._flags
+        local pos = self._pos
+
+        if not pos then
+            -- The iterator is exhausted.
+            return nil
+        end
+
+        local rc = C.ngx_http_lua_ffi_exec_regex(compiled, flags, subj,
+                                                subj_len, pos)
+
+        if rc == PCRE_ERROR_NOMATCH then
+            destroy_re_gmatch_iterator(self)
+            return nil
+        end
+
+        if rc < 0 then
+            destroy_re_gmatch_iterator(self)
+            return nil, "pcre_exec() failed: " .. rc
+        end
+
+        if rc == 0 then
+            if band(flags, FLAG_DFA) == 0 then
+                destroy_re_gmatch_iterator(self)
+                return nil, "capture size too small"
+            end
+
+            rc = 1
+        end
+
+        local cp_pos = tonumber(compiled.captures[1])
+        if cp_pos == compiled.captures[0] then
+            cp_pos = cp_pos + 1
+            if cp_pos > subj_len then
+                local res = collect_captures(compiled, rc, subj, flags)
+                destroy_re_gmatch_iterator(self)
+                return res
+            end
+        end
+        self._pos = cp_pos
+        return collect_captures(compiled, rc, subj, flags)
+    end
+
+
+    local re_gmatch_iterator_mt = { __call = iterate_re_gmatch }
+
+    function ngx.re.gmatch(subj, regex, opts)
+        subj  = tostring(subj)
+
+        local compiled, compile_once, flags = re_match_compile(regex, opts)
+        if compiled == nil then
+            -- compiled_once holds the error string
+            return nil, compile_once
+        end
+
+        local re_gmatch_iterator = {
+            _compiled = compiled,
+            _compile_once = compile_once,
+            _subj = subj,
+            _subj_len = #subj,
+            _flags = flags,
+            _pos = 0,
+        }
+
+        return setmetatable(re_gmatch_iterator, re_gmatch_iterator_mt)
+    end
+end  -- do
+
+
 local function new_script_engine(subj, compiled, count)
     if not script_engine then
         script_engine = C.ngx_http_lua_ffi_create_script_engine()
@@ -488,6 +593,9 @@ local function check_buf_size(buf, buf_size, pos, len, new_len, must_alloc)
     end
     return buf, buf_size, pos, new_len
 end
+
+
+_M.check_buf_size = check_buf_size
 
 
 local function re_sub_compile(regex, opts, replace, func)
@@ -592,6 +700,9 @@ local function re_sub_compile(regex, opts, replace, func)
 end
 
 
+_M.re_sub_compile = re_sub_compile
+
+
 local function re_sub_func_helper(subj, regex, replace, opts, global)
     local compiled, compile_once, flags =
                                     re_sub_compile(regex, opts, nil, replace)
@@ -602,6 +713,7 @@ local function re_sub_func_helper(subj, regex, replace, opts, global)
 
     -- exec the compiled regex
 
+    subj = tostring(subj)
     local subj_len = #subj
     local count = 0
     local pos = 0
@@ -645,10 +757,10 @@ local function re_sub_func_helper(subj, regex, replace, opts, global)
 
         local res = collect_captures(compiled, rc, subj, flags)
 
-        local bit = replace(res)
-        local bit_len = #bit
+        local piece = tostring(replace(res))
+        local piece_len = #piece
 
-        local new_dst_len = dst_len + prefix_len + bit_len
+        local new_dst_len = dst_len + prefix_len + piece_len
         dst_buf, dst_buf_size, dst_pos, dst_len =
             check_buf_size(dst_buf, dst_buf_size, dst_pos, dst_len,
                            new_dst_len, true)
@@ -659,9 +771,9 @@ local function re_sub_func_helper(subj, regex, replace, opts, global)
             dst_pos = dst_pos + prefix_len
         end
 
-        if bit_len > 0 then
-            ffi_copy(dst_pos, bit, bit_len)
-            dst_pos = dst_pos + bit_len
+        if piece_len > 0 then
+            ffi_copy(dst_pos, piece, piece_len)
+            dst_pos = dst_pos + piece_len
         end
 
         cp_pos = compiled.captures[1]
@@ -687,7 +799,8 @@ local function re_sub_func_helper(subj, regex, replace, opts, global)
             local suffix_len = subj_len - cp_pos
 
             local new_dst_len = dst_len + suffix_len
-            dst_buf, dst_buf_size, dst_pos, dst_len =
+            local _
+            dst_buf, _, dst_pos, dst_len =
                 check_buf_size(dst_buf, dst_buf_size, dst_pos, dst_len,
                                new_dst_len, true)
 
@@ -711,6 +824,7 @@ local function re_sub_str_helper(subj, regex, replace, opts, global)
 
     -- exec the compiled regex
 
+    subj = tostring(subj)
     local subj_len = #subj
     local count = 0
     local pos = 0
@@ -815,7 +929,8 @@ local function re_sub_str_helper(subj, regex, replace, opts, global)
             local suffix_len = subj_len - cp_pos
 
             local new_dst_len = dst_len + suffix_len
-            dst_buf, dst_buf_size, dst_pos, dst_len =
+            local _
+            dst_buf, _, dst_pos, dst_len =
                 check_buf_size(dst_buf, dst_buf_size, dst_pos, dst_len,
                                new_dst_len)
 
