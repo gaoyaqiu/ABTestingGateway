@@ -13,6 +13,7 @@ _M.new = function(self, conf)
     self.dbid       = conf.dbid
     self.poolsize   = conf.poolsize
     self.idletime   = conf.idletime
+    self.auth   = conf.auth
 
     local red = redis:new()
     return setmetatable({redis = red}, { __index = _M } )
@@ -25,6 +26,7 @@ _M.connectdb = function(self)
     local port  = self.port
     local dbid  = self.dbid
     local red   = self.redis
+    local auth  = self.auth
 
     if not uds and not (host and port) then
         return nil, 'no uds or tcp avaliable provided'
@@ -38,16 +40,25 @@ _M.connectdb = function(self)
     red:set_timeout(timeout)
 
     local ok, err 
-    if uds then
+    if uds and (uds ~= nil and uds ~= '')  then
         ok, err = red:connect('unix:'..uds)
         if ok then return red:select(dbid) end
     end
-
+   
     if host and port then
         ok, err = red:connect(host, port)
-        if ok then return red:select(dbid) end
-    end
+        if not ok then
+            errlog("Cannot connect, host: " .. host .. ", port: " .. port)
+            return nil, err
+        end
 
+        if auth and (auth ~= nil and auth ~= '')  then
+            ok, err = red:auth(auth)
+            return ok, err
+        end
+
+        return red:select(dbid)
+    end
     return ok, err
 end
 
